@@ -1,0 +1,18 @@
+FROM cgr.dev/chainguard/python:latest-dev@sha256:c0328ed1997b6826d7d2ae4ea972345d3487a80f15ceb1d26f211f7c02f8c177 AS build
+USER root
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --target /install -r requirements.txt
+
+FROM cgr.dev/chainguard/python:latest@sha256:4b2cec05cea94a58e635f21ca5d7c642d24ec58258008bf9341a0c062de5d99d
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/deps
+COPY --from=build /install /deps
+WORKDIR /app
+COPY --chown=65532:65532 app.py .
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD ["/usr/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+ENTRYPOINT ["/usr/bin/python", "-m", "gunicorn"]
+CMD ["--bind", "0.0.0.0:8000", "app:app"]

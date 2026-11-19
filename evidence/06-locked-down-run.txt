@@ -1,0 +1,16 @@
+== slim
+{"status":"ok"}
+
+uid 0
+== slim-hardened
+{"status":"ok"}
+
+uid 10001
+== alpine
+{"status":"ok"}
+
+uid 10001
+== chainguard
+{"status":"ok"}
+
+uid 65532
