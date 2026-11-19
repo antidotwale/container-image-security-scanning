@@ -48,6 +48,16 @@ Each variant was started with `--read-only --tmpfs /tmp --cap-drop ALL --securit
 
 For this app, Chainguard, on two conditions: the team accepts no shell in the runtime image, and someone owns the process for bumping the digest. If the team needs a shell for debugging, use Alpine. If the team needs glibc, use slim-hardened and gate on fixable findings only, with the unfixed list reviewed on a schedule.
 
+## CI
+
+`.github/workflows/images.yml` runs on every push and pull request to main. One matrix job per variant: build, start with the locked down flags, check health and the uid, scan with Trivy, write a count table to the run summary and keep the JSON report as an artifact.
+
+- alpine and chainguard are gated. Gate 1 fails on any CRITICAL. Gate 2 fails on HIGH that has a fix.
+- slim and slim-hardened are report only. They exist for the comparison, and gating them would keep main red (6 and 1 fixable HIGH).
+- Trivy is installed as a binary with a checksum check, every Action is pinned to a commit SHA, and the token is read only.
+
+**Proof the gate can fail.** On a throwaway pull request I turned the gate on for slim-hardened. Gate 2 failed on zlib1g CVE-2026-85091, the one fixable HIGH, while the other jobs stayed green (evidence 08). The pull request was closed without merging. Gate 1 was not shown failing, because none of these images has a CRITICAL finding to trigger it.
+
 ## Limits of this lab
 
 - One small app, one scanner (Trivy), one day. Results change daily as vulnerability data and base images change. Treat the table as a snapshot.
@@ -74,3 +84,4 @@ For this app, Chainguard, on two conditions: the team accepts no shell in the ru
 | evidence/05-trivy-slim-hardened-all-high.txt | All 48 HIGH on slim-hardened |
 | evidence/06-locked-down-run.txt | Each variant healthy under a locked down container, with its uid |
 | evidence/07-shell-check.txt | Chainguard runtime has no shell, slim does |
+| evidence/08-gate-proof-red-run.txt | CI log of Gate 2 failing on zlib1g when slim-hardened was gated on a throwaway pull request |
