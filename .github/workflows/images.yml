@@ -45,7 +45,7 @@ jobs:
             gate: "false"
           - variant: slim-hardened
             uid: "10001"
-            gate: "false"
+            gate: "true"
           - variant: alpine
             uid: "10001"
             gate: "true"
