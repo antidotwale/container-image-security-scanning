@@ -1,0 +1,109 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run unit tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+          "$RUNNER_TEMP/venv/bin/pytest" -q
+
+  images:
+    name: image (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: slim
+            uid: "0"
+            gate: "false"
+          - variant: slim-hardened
+            uid: "10001"
+            gate: "false"
+          - variant: alpine
+            uid: "10001"
+            gate: "true"
+          - variant: chainguard
+            uid: "65532"
+            gate: "true"
+    env:
+      VARIANT: ${{ matrix.variant }}
+      EXPECTED_UID: ${{ matrix.uid }}
+      GATE: ${{ matrix.gate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Trivy (checksum verified)
+        run: |
+          curl -sSfL -o trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+      - name: Build image
+        run: docker build -f "docker/Dockerfile.${VARIANT}" -t "cis-${VARIANT}" .
+      - name: Start locked down and check health and user
+        run: |
+          docker run -d --name smoke -p 8000:8000 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges "cis-${VARIANT}"
+          curl -fsS --retry 15 --retry-delay 1 --retry-all-errors http://127.0.0.1:8000/health || { docker logs smoke; exit 1; }
+          test "$(docker exec smoke python -c 'import os; print(os.getuid())')" = "${EXPECTED_UID}"
+      - name: Stop container
+        if: always()
+        run: docker rm -f smoke || true
+      - name: Scan image and write report
+        run: |
+          mkdir -p reports
+          ./trivy image --scanners vuln --severity HIGH,CRITICAL --format json --output "reports/${VARIANT}.json" --no-progress --skip-version-check --timeout 15m "cis-${VARIANT}"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          d = json.load(open(f"reports/{os.environ['VARIANT']}.json"))
+          c = h = f = 0
+          for r in d.get("Results", []) or []:
+              for v in r.get("Vulnerabilities") or []:
+                  s = v.get("Severity")
+                  c += s == "CRITICAL"
+                  h += s == "HIGH"
+                  f += bool(v.get("FixedVersion"))
+          mode = "gated" if os.environ["GATE"] == "true" else "report only"
+          print(f"### {os.environ['VARIANT']} ({mode})\n")
+          print("| CRITICAL | HIGH | with a fix |\n|---|---|---|")
+          print(f"| {c} | {h} | {f} |")
+          PY
+      - name: Gate 1, fail on any CRITICAL
+        if: matrix.gate == 'true'
+        run: ./trivy image --scanners vuln --severity CRITICAL --exit-code 1 --no-progress --skip-version-check --timeout 15m "cis-${VARIANT}"
+      - name: Gate 2, fail on HIGH that has a fix
+        if: matrix.gate == 'true'
+        run: ./trivy image --scanners vuln --severity HIGH --ignore-unfixed --exit-code 1 --no-progress --skip-version-check --timeout 15m "cis-${VARIANT}"
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report-${{ matrix.variant }}
+          path: reports/
+          if-no-files-found: ignore
